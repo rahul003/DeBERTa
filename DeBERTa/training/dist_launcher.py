@@ -89,6 +89,15 @@ def initialize_distributed(args, join=True):
     args.node_rank = args.rank
     args.world_size = args.n_gpu * args.world_size
     seed = args.seed
+
+    if args.use_mpi:
+        args.local_rank = int(os.getenv('OMPI_COMM_WORLD_LOCAL_RANK', '0'))
+        args.rank = int(os.getenv('OMPI_COMM_WORLD_RANK', '0'))
+        args.world_size = int(os.getenv('OMPI_COMM_WORLD_SIZE', '1'))
+        args.seed = seed + args.rank
+        return _setup_distributed_group(args)
+
+
     is_child = False
     if args.world_size>1:
       children = []

@@ -79,9 +79,11 @@ case ${init,,} in
 		;;
 esac
 
-python -m DeBERTa.apps.run --model_config config.json  \
+python -m DeBERTa.apps.run \
+	--model_config config.json  \
 	--tag $tag \
 	--do_train \
+	--use_mpi 1 --workers 0 \
 	--num_training_steps 1000000 \
 	--max_seq_len $max_seq_length \
 	--dump 10000 \
