@@ -2,10 +2,14 @@
 SCRIPT=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT")
 cd $SCRIPT_DIR
-
+echo $PYTHONPATH
+ls /opt/ml/code/
 cache_dir=/tmp/DeBERTa/MLM/
 
 max_seq_length=512
+
+#data_dir=/opt/ml/input/wiki103/spm_$max_seq_length
+cache_dir=/opt/ml/input/data/train
 data_dir=$cache_dir/wiki103/spm_$max_seq_length
 
 function setup_wiki_data(){
@@ -17,7 +21,7 @@ function setup_wiki_data(){
 
 	if [[ ! -e  $data_dir/test.txt ]]; then
 		wget -q https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-v1.zip -O $cache_dir/wiki103.zip
-		unzip -j $cache_dir/wiki103.zip -d $cache_dir/wiki103
+		unzip -o -j $cache_dir/wiki103.zip -d $cache_dir/wiki103
 		mkdir -p $data_dir
 		python ./prepare_data.py -i $cache_dir/wiki103/wiki.train.tokens -o $data_dir/train.txt --max_seq_length $max_seq_length
 		python ./prepare_data.py -i $cache_dir/wiki103/wiki.valid.tokens -o $data_dir/valid.txt --max_seq_length $max_seq_length
@@ -25,7 +29,11 @@ function setup_wiki_data(){
 	fi
 }
 
-setup_wiki_data
+#setup_wiki_data
+#exit 0
+#if [ "$OMPI_COMM_WORLD_LOCAL_RANK" == "0" ]; then
+#  setup_wiki_data
+#fi
 
 Task=MLM
 
@@ -46,7 +54,7 @@ case ${init,,} in
 	--model_config deberta_base.json \
 	--warmup 10000 \
 	--learning_rate 1e-4 \
-	--train_batch_size 256 \
+	--train_batch_size 32 \
 	--max_ngram 3 \
 	--fp16 True "
 		;;
