@@ -22,6 +22,7 @@ if local_mode:
     session = LocalSession()
     session.config = {'local': {'local_code': True}}
     sagemaker_session = session
+    region = 'us-west-2'
 else:
     session = boto3.session.Session()
     region = session.region_name
@@ -37,14 +38,14 @@ print("Default bucket for this session: ", default_bucket)
 s3_output_location = f"s3://{default_bucket}/output/"
 
 mpioptions = "-x NCCL_DEBUG=INFO -x SMDEBUG_LOG_LEVEL=ERROR "
-mpioptions += "-x FI_EFA_USE_DEVICE_RDMA=1 -x FI_PROVIDER=efa -x RDMAV_FORK_SAFE=1"
-
+mpioptions += "-x FI_EFA_USE_DEVICE_RDMA=1 -x FI_PROVIDER=efa -x RDMAV_FORK_SAFE=1 "
+mpioptions += "-x MASTER_ADDR=algo-1"
 metric_definitions = [
     {"Name": "base_metric", "Regex": "<><><><><><>"}
 ]
 
 instance_type = "ml.p3.16xlarge"
-instance_count = 1
+instance_count = 2
 processes_per_host = 8
 
 s3_train_bucket = 's3://sagemaker-us-west-2-855988369404/data/deberta-mlm/'
@@ -56,7 +57,7 @@ data_channels = {"train": train}
 volume_size = 500
 base_job_name = f'deberta-v3'
 
-if not local_mode:
+if True or not local_mode:
     checkpoint_bucket = f"s3://sagemaker-{region}-{account}/"
     checkpoint_s3_uri = (
         f"{checkpoint_bucket}/experiments/deberta-v3/{base_job_name}/"
@@ -66,7 +67,7 @@ else:
     checkpoint_s3_uri = None
 
 estimator = PyTorch(
-        'launch.py', 
+        entry_point='launcher_ddp.py', 
         source_dir=os.path.dirname(os.path.dirname(os.getcwd())),
         role=role,
         instance_type=instance_type if not local_mode else 'local_gpu',
@@ -80,11 +81,11 @@ estimator = PyTorch(
                 "custom_mpi_options": mpioptions,
             },
         },
-        framework_version="1.8.1",
-        py_version="py36",
+        framework_version="1.10.2",
+        py_version="py3",
         output_path=s3_output_location,
-   #     checkpoint_s3_uri=checkpoint_s3_uri,
-   #     checkpoint_local_path=hyperparameters["checkpoint-dir"] if use_fsx else None,
+        checkpoint_s3_uri=checkpoint_s3_uri if not local_mode else None,
+#        checkpoint_local_path=hyperparameters["checkpoint-dir"] if use_fsx else None,
         metric_definitions=metric_definitions,
    #     hyperparameters=hyperparameters,
         debugger_hook_config=False,

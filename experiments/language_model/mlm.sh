@@ -1,14 +1,14 @@
 #!/bin/bash
+set -ex
 SCRIPT=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT")
 cd $SCRIPT_DIR
 echo $PYTHONPATH
-ls /opt/ml/code/
+
 cache_dir=/tmp/DeBERTa/MLM/
-
 max_seq_length=512
+data_dir=/opt/ml/input/wiki103/spm_$max_seq_length
 
-#data_dir=/opt/ml/input/wiki103/spm_$max_seq_length
 cache_dir=/opt/ml/input/data/train
 data_dir=$cache_dir/wiki103/spm_$max_seq_length
 
@@ -30,10 +30,6 @@ function setup_wiki_data(){
 }
 
 #setup_wiki_data
-#exit 0
-#if [ "$OMPI_COMM_WORLD_LOCAL_RANK" == "0" ]; then
-#  setup_wiki_data
-#fi
 
 Task=MLM
 
@@ -92,11 +88,11 @@ python -m DeBERTa.apps.run \
 	--tag $tag \
 	--do_train \
 	--use_mpi 1 --workers 0 \
-	--num_training_steps 1000000 \
+	--num_training_steps 100 \
 	--max_seq_len $max_seq_length \
-	--dump 10000 \
+	--dump_interval 10 \
 	--task_name $Task \
 	--data_dir $data_dir \
 	--vocab_path $cache_dir/spm.model \
 	--vocab_type spm \
-	--output_dir /tmp/ttonly/$tag/$task  $parameters
+	--output_dir ${SM_OUTPUT_DIR} $parameters
