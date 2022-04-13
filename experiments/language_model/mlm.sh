@@ -4,9 +4,8 @@ SCRIPT_DIR=$(dirname "$SCRIPT")
 cd $SCRIPT_DIR
 echo $PYTHONPATH
 
-cache_dir=/tmp/DeBERTa/MLM/
+# cache_dir=/tmp/DeBERTa/MLM/
 max_seq_length=512
-data_dir=/opt/ml/input/wiki103/spm_$max_seq_length
 
 cache_dir=/opt/ml/input/data/train
 data_dir=$cache_dir/wiki103/spm_$max_seq_length
