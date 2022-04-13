@@ -7,7 +7,6 @@ scipy
 sklearn
 tqdm
 ujson
-sagemaker-training==v4.1.0
 seqeval
 psutil
 sentencepiece

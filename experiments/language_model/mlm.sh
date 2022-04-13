@@ -1,5 +1,4 @@
 #!/bin/bash
-# set -ex
 SCRIPT=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT")
 cd $SCRIPT_DIR
@@ -21,7 +20,7 @@ function setup_wiki_data(){
 
 	if [[ ! -e  $data_dir/test.txt ]]; then
 		wget -q https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-v1.zip -O $cache_dir/wiki103.zip
-		unzip -o -j $cache_dir/wiki103.zip -d $cache_dir/wiki103
+		unzip -j $cache_dir/wiki103.zip -d $cache_dir/wiki103
 		mkdir -p $data_dir
 		python ./prepare_data.py -i $cache_dir/wiki103/wiki.train.tokens -o $data_dir/train.txt --max_seq_length $max_seq_length
 		python ./prepare_data.py -i $cache_dir/wiki103/wiki.valid.tokens -o $data_dir/valid.txt --max_seq_length $max_seq_length
@@ -50,7 +49,7 @@ case ${init,,} in
 	--model_config deberta_base.json \
 	--warmup 10000 \
 	--learning_rate 1e-4 \
-	--train_batch_size 32 \
+	--train_batch_size 256 \
 	--max_ngram 3 \
 	--fp16 True "
 		;;

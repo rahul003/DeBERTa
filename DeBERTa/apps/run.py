@@ -12,23 +12,6 @@
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
 
-#import sys
-#from pathlib import Path
-#if __name__ == '__main__' and __package__ is None:
-#  file = Path(__file__).resolve()
-#  parent, top = file.parent, file.parents[1]
-#  print(parent, top, file)
-#  sys.path.append(str(top))
-#  try:
-#    sys.path.remove(str(parent))
-#  except ValueError: # Already removed
-#    pass
-#  print(sys.path)
-#  import deberta
-#  __package__ = 'deberta'
-
-
-
 from ..deberta import tokenizers,load_vocab
 from collections import OrderedDict, Mapping, Sequence
 import argparse
