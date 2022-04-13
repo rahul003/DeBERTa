@@ -11,5 +11,5 @@ seqeval
 psutil
 sentencepiece
 #GitPython
-torch
+#torch
 #torchvision

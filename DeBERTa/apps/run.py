@@ -11,6 +11,7 @@
 
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
+
 from ..deberta import tokenizers,load_vocab
 from collections import OrderedDict, Mapping, Sequence
 import argparse
@@ -414,6 +415,7 @@ def build_argument_parser():
             type=str,
             help="The loss function used to calculate adversarial loss. It can be one of symmetric-kl, kl or mse.")
 
+  parser.add_argument('--use_mpi', default=0, type=int, help="Use mpi assumes all processes have been launched, else we fork to create processes")
 
   return parser
 
@@ -434,5 +436,6 @@ if __name__ == "__main__":
       atexit._run_exitfuncs()
     except:
       pass
-    kill_children()
+    if not args.use_mpi:
+        kill_children()
     os._exit(-1)

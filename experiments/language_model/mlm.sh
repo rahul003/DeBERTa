@@ -2,10 +2,12 @@
 SCRIPT=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT")
 cd $SCRIPT_DIR
+echo $PYTHONPATH
 
-cache_dir=/tmp/DeBERTa/MLM/
-
+# cache_dir=/tmp/DeBERTa/MLM/
 max_seq_length=512
+
+cache_dir=/opt/ml/input/data/train
 data_dir=$cache_dir/wiki103/spm_$max_seq_length
 
 function setup_wiki_data(){
@@ -25,7 +27,7 @@ function setup_wiki_data(){
 	fi
 }
 
-setup_wiki_data
+#setup_wiki_data
 
 Task=MLM
 
@@ -82,11 +84,14 @@ esac
 python -m DeBERTa.apps.run --model_config config.json  \
 	--tag $tag \
 	--do_train \
-	--num_training_steps 1000000 \
+	--use_mpi 1 \
+	--num_training_steps 1000 --warmup_proportion 0.1 \
 	--max_seq_len $max_seq_length \
-	--dump 10000 \
+	--dump_interval 100 \
 	--task_name $Task \
 	--data_dir $data_dir \
 	--vocab_path $cache_dir/spm.model \
 	--vocab_type spm \
-	--output_dir /tmp/ttonly/$tag/$task  $parameters
+	--output_dir /opt/ml/checkpoints $parameters
+
+ls /opt/ml/checkpoints/

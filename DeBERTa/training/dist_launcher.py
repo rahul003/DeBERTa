@@ -43,7 +43,7 @@ def get_ngpu():
   with Pool(1) as p:
     return p.map(gc, range(1))[0]
 
-def _setup_distributed_group(args):
+def _setup_distributed_group(args, use_env_init=False):
   """Initialize torch.distributed."""
 
   torch.backends.cudnn.enabled = False
@@ -55,8 +55,11 @@ def _setup_distributed_group(args):
     if args.local_rank >= 0:
       device_id = args.local_rank
     device = torch.device("cuda", device_id)
-    init_method = 'tcp://'
-    init_method += args.master_ip + ':' + args.master_port
+    if use_env_init:
+        init_method = 'env://'
+    else:
+        init_method = 'tcp://'
+        init_method += args.master_ip + ':' + args.master_port
     distributed_backend = getattr(args, 'distributed_backend', 'nccl')
     torch.distributed.init_process_group(
       backend=distributed_backend,
@@ -89,6 +92,15 @@ def initialize_distributed(args, join=True):
     args.node_rank = args.rank
     args.world_size = args.n_gpu * args.world_size
     seed = args.seed
+
+    if args.use_mpi:
+        args.local_rank = int(os.getenv('OMPI_COMM_WORLD_LOCAL_RANK', '0'))
+        args.rank = int(os.getenv('OMPI_COMM_WORLD_RANK', '0'))
+        args.world_size = int(os.getenv('OMPI_COMM_WORLD_SIZE', '1'))
+        args.seed = seed + args.rank
+        return _setup_distributed_group(args, use_env_init=True)
+
+
     is_child = False
     if args.world_size>1:
       children = []
