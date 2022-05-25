@@ -20,7 +20,6 @@ import smdistributed.modelparallel.torch as smp
 
 
 class LR(object):
-    """Anneals the learning rate."""
 
     def __init__(self, optimizer, start_lr,
                  warmup, total_iters,
@@ -47,7 +46,6 @@ class LR(object):
         if x < warmup:
             return x / warmup
         return (1 - ends) * (1.0 - x) + ends
-
 
     def step(self, step_num=None):
         """Set lr for all parameters groups."""
