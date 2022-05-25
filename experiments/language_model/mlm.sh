@@ -7,7 +7,7 @@ echo $PYTHONPATH
 # cache_dir=/tmp/DeBERTa/MLM/
 max_seq_length=512
 
-cache_dir=/opt/ml/input/data/train
+cache_dir=/dataset
 data_dir=$cache_dir/wiki103/spm_$max_seq_length
 
 function setup_wiki_data(){
@@ -85,7 +85,7 @@ python -m DeBERTa.apps.run --model_config config.json  \
 	--tag $tag \
 	--do_train \
 	--use_mpi 1 \
-	--num_training_steps 1000 --warmup_proportion 0.1 \
+	--num_training_steps 100 --warmup_proportion 0.1 \
 	--max_seq_len $max_seq_length \
 	--dump_interval 100 \
 	--task_name $Task \

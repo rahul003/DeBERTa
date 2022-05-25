@@ -33,6 +33,9 @@ from ...utils import get_logger
 from ..models import MaskedLanguageModel
 from .._utils import merge_distributed, join_chunks
 
+import smdistributed.modelparallel
+import smdistributed.modelparallel.torch as smp
+
 logger=get_logger()
 
 __all__ = ["MLMTask"]
@@ -222,13 +225,16 @@ dataset_size = dataset_size, shuffle=True, **kwargs)
         name = eval_item.name
         eval_sampler = SequentialSampler(len(eval_item.data))
         batch_sampler = BatchSampler(eval_sampler, args.eval_batch_size)
-        batch_sampler = DistributedBatchSampler(batch_sampler, rank=args.rank, world_size=args.world_size)
-        eval_dataloader = DataLoader(eval_item.data, batch_sampler=batch_sampler, num_workers=args.workers)
+        batch_sampler = DistributedBatchSampler(batch_sampler, rank=smp.dp_rank(), world_size=smp.dp_size(),
+                                                drop_last=True)
+        eval_dataloader = DataLoader(eval_item.data, batch_sampler=batch_sampler, num_workers=0)
         model.eval()
         eval_loss, eval_accuracy = 0, 0
         nb_eval_steps, nb_eval_examples = 0, 0
         predicts=[]
         labels=[]
+        # if smp.dp_rank()==0:
+        #   print('Running eval')
         for batch in tqdm(AsyncDataLoader(eval_dataloader), ncols=80, desc='Evaluating: {}'.format(prefix), disable=no_tqdm):
           batch = batch_to(batch, device)
           with torch.no_grad():
@@ -249,18 +255,22 @@ dataset_size = dataset_size, shuffle=True, **kwargs)
         eval_loss = eval_loss / nb_eval_steps
         predicts = merge_distributed(predicts)
         labels = merge_distributed(labels)
+        if smp.dp_rank()==0:
+          print('Computed eval_loss')
 
         result=OrderedDict()
         metrics_fn = eval_item.metrics_fn
         metrics = metrics_fn(predicts.numpy(), labels.numpy())
         result.update(metrics)
+        if smp.dp_rank()==0:
+          print('Updated results')
         result['perplexity'] = torch.exp(eval_loss).item()
         critial_metrics = set(metrics.keys()) if eval_item.critial_metrics is None or len(eval_item.critial_metrics)==0 else eval_item.critial_metrics
         eval_metric = np.mean([v for k,v in metrics.items() if  k in critial_metrics])
         result['eval_loss'] = eval_loss.item()
         result['eval_metric'] = eval_metric
         result['eval_samples'] = len(labels)
-        if args.rank<=0:
+        if smp.dp_rank() == 0:
           logger.info("***** Eval results-{}-{} *****".format(name, prefix))
           for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))

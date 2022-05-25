@@ -37,6 +37,9 @@ from ..data import DistributedBatchSampler, SequentialSampler, BatchSampler, Asy
 from ..training import get_args as get_training_args
 from ..optims import get_args as get_optims_args
 
+import smdistributed.modelparallel
+import smdistributed.modelparallel.torch as smp
+
 def create_model(args, num_labels, model_class_fn):
   # Prepare model
   rank = getattr(args, 'rank', 0)
@@ -64,13 +67,24 @@ def train_model(args, model, device, train_data, eval_data, run_eval_fn, train_f
     eval_metric = np.mean([v[0] for k,v in results.items() if 'train' not in k])
     return eval_metric
 
+  @smp.step
+  def _smp_loss_fn(trainer, model, data):
+    output = model(**data)
+    loss = output['loss'].mean()
+    step_loss = loss.float().detach().item()
+
+    model.backward(loss)
+
+    return step_loss, data['input_ids'].size(0)
+
   def _loss_fn(trainer, model, data):
     output = model(**data)
     loss = output['loss']
+
     return loss.mean(), data['input_ids'].size(0)
 
   def get_adv_loss_fn():
-    adv_modules = hook_sift_layer(model, hidden_size=model.config.hidden_size, learning_rate=args.vat_learning_rate, init_perturbation=args.vat_init_perturbation)
+    adv_modules = hook_sift_layer(model, hidden_size=model.module.module.module.config.hidden_size, learning_rate=args.vat_learning_rate, init_perturbation=args.vat_init_perturbation)
     adv = AdversarialLearner(model, adv_modules)
     def adv_loss_fn(trainer, model, data):
       output = model(**data)
@@ -97,7 +111,8 @@ def train_model(args, model, device, train_data, eval_data, run_eval_fn, train_f
   def _train_fn(args, model, device, data_fn, eval_fn, loss_fn):
     
     if loss_fn is None:
-      loss_fn = get_adv_loss_fn() if args.vat_lambda>0 else _loss_fn
+      # loss_fn = get_adv_loss_fn() if args.vat_lambda>0 else _loss_fn
+      loss_fn = _smp_loss_fn
   
     trainer = DistributedTrainer(args, args.output_dir, model, device, data_fn, loss_fn = loss_fn, eval_fn = eval_fn, dump_interval = args.dump_interval)
     trainer.train()
@@ -159,8 +174,9 @@ def run_eval(args, model, device, eval_data, prefix=None, tag=None, steps=None):
     name = eval_item.name
     eval_sampler = SequentialSampler(len(eval_item.data))
     batch_sampler = BatchSampler(eval_sampler, args.eval_batch_size)
-    batch_sampler = DistributedBatchSampler(batch_sampler, rank=args.rank, world_size=args.world_size)
-    eval_dataloader = DataLoader(eval_item.data, batch_sampler=batch_sampler, num_workers=args.workers)
+    batch_sampler = DistributedBatchSampler(batch_sampler, rank=smp.dp_rank(), world_size=smp.dp_size(), drop_last=True)
+    eval_dataloader = DataLoader(eval_item.data, batch_sampler=batch_sampler, num_workers=0)
+
     model.eval()
     eval_loss, eval_accuracy = 0, 0
     nb_eval_steps, nb_eval_examples = 0, 0
@@ -251,16 +267,37 @@ def main(args):
 
   if args.do_train:
     train_data = task.train_data(max_seq_len=args.max_seq_length, debug=args.debug)
+
+  smp_config = {
+    "ddp": True,
+    "tensor_parallel_degree": 1,
+    "pipeline_parallel_degree": 1,
+    # "shard_optimizer_state": True,
+    "fp16": True,
+    "optimize": "speed"
+  }
+
+  smp.init(smp_config)
+
   model_class_fn = task.get_model_class_fn()
   model = create_model(args, len(label_list), model_class_fn)
+  model = smp.DistributedModel(model, trace_device="gpu")
+  # if smp.local_rank() == 0:
+  #   print('SMP Deberta Model')
+  #   print(model)
   if args.do_train:
     with open(os.path.join(args.output_dir, 'model_config.json'), 'w', encoding='utf-8') as fs:
-      fs.write(model.config.to_json_string() + '\n')
+      fs.write(model.module.module.module.config.to_json_string() + '\n')
     shutil.copy(vocab_path, args.output_dir)
-  logger.info("Model config {}".format(model.config))
-  device = initialize_distributed(args)
+  logger.info("Model config {}".format(model.module.module.module.config))
+  # device = initialize_distributed(args)
+  torch.cuda.set_device(smp.local_rank())
+  device = torch.device("cuda")
   if not isinstance(device, torch.device):
     return 0
+  if smp.dp_rank() == 0:
+    print('Initial model.module.module.module.encoder.layer[0].attention.output.dense.weight')
+    print(model.module.module.module.deberta.encoder.layer[0].attention.output.dense.weight)
   model.to(device)
   run_eval_fn = task.get_eval_fn()
   loss_fn = task.get_loss_fn(args)

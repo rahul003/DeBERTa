@@ -15,12 +15,16 @@ import pdb
 from collections import defaultdict, Mapping, Sequence, OrderedDict
 from torch.utils.data import DataLoader
 from ..data import BatchSampler, DistributedBatchSampler,RandomSampler,SequentialSampler, AsyncDataLoader
+from ..optims import ExpLossScaler
 from ..utils import get_logger
 logger = get_logger()
 
 from .dist_launcher import get_ngpu
-from .optimizer_utils import create_xoptimizer
+from .optimizer_utils import create_xoptimizer, create_smp_optimizer
 from ._utils import batch_to
+
+import smdistributed.modelparallel
+import smdistributed.modelparallel.torch as smp
 
 __all__ = ['DistributedTrainer', 'set_random_seed']
 
@@ -48,7 +52,7 @@ class TrainerState:
     self.name = name
     self.run_id = None
 
-  def update_step(self, loss, examples, loss_scale):
+  def update_step(self, loss, examples, loss_scale=1):
     self.examples += examples
     self.loss += loss
     self.steps += 1
@@ -65,8 +69,10 @@ class TrainerState:
       tag = f'[{self.name}]'
     else:
       tag = None
-    logger.info('{}[{:0.1f}%][{:0.2f}h] Steps={}, loss={}, examples={}, loss_scale={:0.1f}, {:0.1f}s'.format(tag, 100*self.steps/self.num_training_steps, \
-      (self.num_training_steps - self.steps)*(start-end)/((self.steps-self._last_report_step)*3600), self.steps, self.loss/self.steps, self.examples, self.loss_scale, end-start))
+    # if smp.dp_rank() == 0:
+    if True:
+      logger.info('{}[{:0.1f}%][{:0.2f}h] Steps={}, loss={}, examples={}, loss_scale={:0.1f}, {:0.1f}s'.format(tag, 100*self.steps/self.num_training_steps, \
+        (self.num_training_steps - self.steps)*(start-end)/((self.steps-self._last_report_step)*3600), self.steps, self.loss/self.steps, self.examples, self.loss_scale, end-start))
     self._last_report_time = end
     self._last_report_step = self.steps
 
@@ -103,11 +109,16 @@ class DistributedTrainer:
     self.model = self._setup_model(args, model)
     self.post_loss_fn = None
 
+    self.loss_scaler = ExpLossScaler(scale_interval=args.scale_steps, init_scale=args.loss_scale)
+
     def _opt_fn(trainer, model, training_steps):
-      return create_xoptimizer(model, args, num_train_steps = training_steps)
+      if smp.dp_rank() == 0:
+        print('Creating smp fp16 optimizer')
+      # return create_xoptimizer(model, args, num_train_steps = training_steps)
+      return create_smp_optimizer(model, args)
     optimizer_fn = optimizer_fn if optimizer_fn is not None else _opt_fn
 
-    self.optimizer = optimizer_fn(self, model, training_steps)
+    self.optimizer, self.lr_scheduler = optimizer_fn(self, model, training_steps)
 
     def _loss_fn(trainer, model, batch):
       _,loss = model(**batch)
@@ -129,14 +140,12 @@ class DistributedTrainer:
     if not self.initialized:
       self.initialize()
 
-    rank = self.args.rank
-    world_size = self.args.world_size
+    rank = smp.dp_rank()
     for n_epoch in range(self.trainer_state.epochs, self.training_epochs):
       batch_sampler = BatchSampler(self.train_sampler, self.args.train_batch_size)
-      batch_sampler = DistributedBatchSampler(batch_sampler, rank = rank, world_size = world_size)
+      batch_sampler = DistributedBatchSampler(batch_sampler, rank=smp.dp_rank(), world_size=smp.dp_size(), drop_last=True)
       batch_sampler.next = self.trainer_state.next_batch
-      num_workers = getattr(self.args, 'workers', 2)
-      train_dataloader = DataLoader(self.train_data, batch_sampler=batch_sampler, num_workers=num_workers, worker_init_fn=self.init_fn, pin_memory=False)
+      train_dataloader = DataLoader(self.train_data, batch_sampler=batch_sampler, num_workers=0, pin_memory=True)
       torch.cuda.empty_cache()
       for step, batch in enumerate(AsyncDataLoader(train_dataloader, 100)):
         if self.trainer_state.steps >= self.training_steps:
@@ -148,7 +157,7 @@ class DistributedTrainer:
       self.trainer_state.epochs += 1
       self.trainer_state.next_batch = 0
       self.trainer_state.report_state()
-      self._eval_model()
+      # self._eval_model()
 
   def save_model(self, args, checkpoint_dir, chk_postfix, model, optimizer):
     save_path= os.path.join(checkpoint_dir, f'pytorch.model-{chk_postfix}.bin')
@@ -199,29 +208,38 @@ class DistributedTrainer:
     while not go_next:
       step_loss = 0
       batch_size = 0
-      self.optimizer.zero_grad()
+      self.optimizer.zero_grad(set_to_none=True)
       forward_outputs = []
       for i, sub in enumerate(data_chunks):
+        loss_scale = getattr(self.trainer_state, 'loss_scale', 1)
         output = self.loss_fn(self, self.model, sub)
         if isinstance(output, dict):
           loss, sub_size = output['loss'], output['batch_size']
         else:
           loss, sub_size = output
+
         forward_outputs.append(output)
-        loss = loss/len(data_chunks)
-        if i == 0:
-          loss_scale, _loss = self.optimizer.backward(loss)
-        else:
-          _loss = loss.float().detach().item()
-          loss = loss.float() * loss_scale
-          loss.backward()
+        _loss = loss[0]
+
+        grad_clip = getattr(self.args, 'grad_clip', 1.0)
+        self.optimizer.clip_master_grads(grad_clip)
+        self.optimizer.step()
+        if not self.optimizer.overflow:
+          self.lr_scheduler.step()
+          if smp.dp_rank() == 0:
+            print('Running lr_scheduler step')
+            print('lr step: ', self.lr_scheduler.num_iters, ' self.lr_scheduler lr: ',
+                  self.optimizer.param_groups[0]['lr'])
+        
         step_loss += _loss
-        batch_size += sub_size
-      if not self.optimizer.step(bs_scale, loss_scale):
-        self.optimizer.zero_grad()
-        continue
+        batch_size += sub_size[0]
+      # if self.trainer_state.steps < 1:
+      #   print('model.module.module.module.encoder.layer[0].attention.output.dense.weight')
+      #   print(self.model.module.module.module.deberta.encoder.layer[0].attention.output.dense.weight)
+      #   print(self.model.module.module.module.deberta.encoder.layer[0].attention.output.dense.weight.grad)
+      self.optimizer.zero_grad(set_to_none=True)
       go_next = True
-    self.trainer_state.update_step(step_loss, batch_size , loss_scale)
+    self.trainer_state.update_step(step_loss, batch_size, self.optimizer.loss_scaler.loss_scale)
     if self.update_fn is not None:
       self.update_fn(self, self.model, loss_scale)
     self.optimizer.zero_grad()
@@ -229,10 +247,11 @@ class DistributedTrainer:
     if self.post_loss_fn is not None:
       self.post_loss_fn(forward_outputs)
 
-    if self.trainer_state.steps%100 == 0:
-      self.trainer_state.report_state()
+    #if self.trainer_state.steps < 100 or self.trainer_state.steps%100 == 0:
+    self.trainer_state.report_state()
     if self.trainer_state.steps%self.dump_interval == 0:
-      self._eval_model()
+      pass
+      # self._eval_model()
 
   def _setup_model(self, args, model):
     if args.world_size > 1:
