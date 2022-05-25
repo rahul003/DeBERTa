@@ -1,11 +1,15 @@
 import torch
 from collections import OrderedDict, Mapping, Sequence
 
+import smdistributed.modelparallel
+import smdistributed.modelparallel.torch as smp
+
 def merge_distributed(data_list, max_len=None):
-  if torch.distributed.is_initialized() and torch.distributed.get_world_size()>1:
-    world_size = torch.distributed.get_world_size()
-  else:
-    world_size = 1
+  # if torch.distributed.is_initialized() and torch.distributed.get_world_size()>1:
+  #   world_size = torch.distributed.get_world_size()
+  # else:
+  #   world_size = 1
+  world_size = smp.dp_size()
   merged = []
   def gather(data):
     data_size = [torch.zeros(data.dim(), dtype=torch.int).to(data.device) for _ in range(world_size)]
@@ -16,8 +20,11 @@ def merge_distributed(data_list, max_len=None):
       torch.distributed.broadcast(_chunk, src=i)
     return data_chunks
 
+  if smp.dp_rank() == 0:
+    print('data_list: ', data_list)
   for data in data_list:
-    if torch.distributed.is_initialized() and torch.distributed.get_world_size()>1:
+    # if torch.distributed.is_initialized() and torch.distributed.get_world_size()>1:
+    if smp.dp_size() > 1:
       if isinstance(data, Sequence):
         data_chunks = []
         for d in data:
@@ -26,11 +33,18 @@ def merge_distributed(data_list, max_len=None):
           data_chunks.append(data_)
         merged.append(data_chunks)
       else:
+        if smp.dp_rank() == 0:
+          print('Processing data')
         _chunks = gather(data)
+        if smp.dp_rank() == 0:
+          print('Running gather(data)')
         merged.extend(_chunks)
+        if smp.dp_rank() == 0:
+          print('extend data')
     else:
       merged.append(data)
-
+  if smp.dp_rank() == 0:
+    print('return data')
   return join_chunks(merged, max_len)
 
 def join_chunks(chunks, max_len=None):

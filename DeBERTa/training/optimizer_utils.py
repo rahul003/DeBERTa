@@ -11,10 +11,15 @@ import numpy as np
 import pdb
 from functools import cmp_to_key
 import torch
+from torch import optim
 import re
 from ..optims import Fp16Optimizer,XAdam,ExpLossScaler,get_world_size
 from ..utils import get_logger
 logger=get_logger()
+
+import smdistributed.modelparallel
+import smdistributed.modelparallel.torch as smp
+from .learning_rates import LR
 
 def xadam_factory(args, training_steps=None):
   def optimizer_fn(param_groups, max_grad_norm=None):
@@ -26,7 +31,8 @@ def xadam_factory(args, training_steps=None):
             b2=args.adam_beta2,
             lr_ends=args.lr_schedule_ends,
             e=args.epsilon,
-            warmup=args.warmup_proportion if args.warmup_proportion<1 else args.warmup_proportion/training_steps,
+            # warmup=args.warmup_proportion if args.warmup_proportion<1 else args.warmup_proportion/training_steps,
+            warmup = 0.1,
             t_total=training_steps,
             schedule=args.lr_schedule,
             max_grad_norm = args.max_grad_norm if max_grad_norm is None else max_grad_norm,
@@ -44,11 +50,12 @@ def create_xoptimizer(model, args, num_train_steps=None, no_decay=['bias', 'Laye
   else:
     loss_scaler = None
 
-  distributed_optimizer = getattr(args, 'distributed_optimizer', True)
+  # distributed_optimizer = getattr(args, 'distributed_optimizer', True)
+  distributed_optimizer = True
   max_distributed_groups = getattr(args, 'max_distributed_groups', 1000000)
   world_size = get_world_size()
   if world_size<=1:
-    distributed_optimizer = False
+   distributed_optimizer = False
 
   _no_decay = [x.strip() for x in getattr(args, 'no_decay', '').split('|') if len(x.strip())>0]
   if len(_no_decay)>0:
@@ -168,3 +175,64 @@ def create_xoptimizer(model, args, num_train_steps=None, no_decay=['bias', 'Laye
       lookahead_alpha = lookahead_alpha, rank=args.rank, distributed=distributed_optimizer)
 
   return optimizer
+
+
+def create_smp_optimizer(model, args):
+  iter_model = model.get_module()
+  param_groups = get_param_groups_by_weight_decay(iter_model)
+
+  num_iters = args.num_training_steps
+  num_iters = max(1, num_iters)
+  init_step = 0.0
+  warmup = 0.1
+  warmup_iter = warmup * num_iters
+  plateau = 0.4
+  plateau_iter = warmup_iter + plateau * num_iters
+  lr_decay_style = 'linear'
+
+  beta1 = getattr(args, 'adam_beta1', 0.95)
+  beta2 = getattr(args, 'adam_beta2', 0.95)
+  lr = getattr(args, 'learning_rate', 0.0001)
+
+  optimizer = optim.AdamW(
+    param_groups, betas=(beta1, beta2), lr=lr, weight_decay=args.weight_decay
+  )
+  # optimizer = smp.DistributedOptimizer(
+  #   optimizer,
+  #   static_loss_scale=None,
+  #   dynamic_loss_scale=True,
+  #   dynamic_loss_args={"scale_window": 1000, "min_scale": 1, "delayed_shift": 2},
+  # )
+  optimizer = smp.DistributedOptimizer(
+    optimizer,
+    static_loss_scale=131072,
+    dynamic_loss_scale=False,
+    dynamic_loss_args=None,
+  )
+
+  lr_scheduler = LR(
+    optimizer,
+    start_lr=lr,
+    warmup=warmup,
+    total_iters=num_iters,
+    decay_style=lr_decay_style,
+    last_iter=init_step,
+    min_lr=0
+  )
+
+  return optimizer, lr_scheduler
+
+def get_param_groups_by_weight_decay(module):
+  weight_decay_params = {"params": []}
+  no_weight_decay_params = {"params": [], "weight_decay": 0.0}
+  param_ids = set()
+  for module_ in module.modules():
+    for n, p in list(module_._parameters.items()):
+      if p is not None and n != "bias" and id(p) not in param_ids:
+        weight_decay_params["params"].append(p)
+        param_ids.add(id(p))
+    for n, p in list(module_._parameters.items()):
+      if p is not None and n == "bias" and id(p) not in param_ids:
+        no_weight_decay_params["params"].append(p)
+        param_ids.add(id(p))
+  return weight_decay_params, no_weight_decay_params

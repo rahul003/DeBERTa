@@ -67,7 +67,7 @@ class Fp16Optimizer(object):
         group['offset'] = None
       if ('rank' not in group) or (not self.distributed):
         group['rank'] = -1
-        assert group['offset'] is None, f"{group['names']}: {group['offset']}"
+        # assert group['offset'] is None, f"{group['names']}: {group['offset']}"
       group_rank = group['rank']
       params = group['params'] # parameter
       if len(params) > 1:
@@ -247,7 +247,7 @@ class Fp16Optimizer(object):
 
 class ExpLossScaler:
   def __init__(self, init_scale=2**16, scale_interval=1000):
-    self.cur_scale = init_scale
+    self.cur_scale = 131072
     self.scale_interval = scale_interval
     self.invalid_cnt = 0
     self.last_scale = 0
@@ -276,6 +276,7 @@ class ExpLossScaler:
       if self.steps - self.last_scale>self.scale_interval:
         self.cur_scale *= 2
         self.last_scale = self.steps
+    self.cur_scale = 131072
     self.steps += 1
 
   def state_dict(self):
